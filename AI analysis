@@ -4,119 +4,112 @@ import fitz  # PyMuPDF
 import os
 import uuid
 
-# --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Logic-Aware PDF Editor", layout="wide", page_icon="🎯")
-st.title("🤖 Intelligent & Layout-Preserving PDF Editor")
+# --- 1. SETTINGS & AI SETUP ---
+st.set_page_config(page_title="Logic-Aware PDF Editor", layout="wide", page_icon="⚖️")
 
-# CSS to make the interface look cleaner
-st.markdown("""
-    <style>
-    .stRadio [role=radiogroup]{flex-direction:row;}
-    .stButton>button {width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white;}
-    </style>
-    """, unsafe_allow_html=True)
-
-try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-    client = genai.Client(api_key=API_KEY)
-except Exception:
-    st.error("Missing GEMINI_API_KEY in Streamlit Secrets!")
+if "GEMINI_API_KEY" not in st.secrets:
+    st.error("Missing API Key! Please add 'GEMINI_API_KEY' to your Streamlit Secrets.")
     st.stop()
 
-# --- 2. THE UI ---
-uploaded_file = st.file_uploader("Step 1: Upload Original PDF (Marksheet/Math Notes)", type="pdf")
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+
+st.title("🎯 Smart Symmetry PDF Editor")
+st.subheader("Edit math values and let AI handle the logic.")
+
+# --- 2. USER INTERFACE ---
+with st.sidebar:
+    st.info("This app preserves your PDF layout exactly while updating mathematical dependencies.")
+    mode = st.radio(
+        "Editing Mode",
+        ["Edit & Keep Format (Surgical)", "Analyse & Change Related Logic (Smart)"],
+        help="Smart mode finds Totals, Percentages, and Derivatives and updates them automatically."
+    )
+
+uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 col1, col2 = st.columns(2)
 with col1:
-    target_text = st.text_input("Step 2: Text to change", placeholder="e.g. 66")
+    target_text = st.text_input("Original value (e.g., 66)", placeholder="Text to find")
 with col2:
-    new_instruction = st.text_input("Step 3: New value/instruction", placeholder="e.g. 76")
+    new_val = st.text_input("New value/instruction (e.g., 76)", placeholder="Text to insert")
 
-# THE TWO OPTIONS
-mode = st.radio(
-    "Step 4: Select Editing Mode",
-    ["Edit & Keep Format (Single Change)", "Analyse & Change Related Logic (Smart)"],
-    help="Smart mode automatically recalculates totals and dependent math."
-)
-
-if st.button("Execute Intelligent Edit"):
+# --- 3. PROCESSING ENGINE ---
+if st.button("Apply Smart Edits"):
     if uploaded_file and target_text:
-        with st.spinner("Analyzing document logic and preserving symmetry..."):
-            # Create a unique filename for multiuser safety
-            session_id = str(uuid.uuid4())
-            input_path = f"input_{session_id}.pdf"
-            output_path = f"output_{session_id}.pdf"
+        with st.spinner("Analyzing math logic and whitening margins..."):
+            # Multiuser unique IDs
+            uid = str(uuid.uuid4())[:8]
+            in_path = f"in_{uid}.pdf"
+            out_path = f"out_{uid}.pdf"
             
-            with open(input_path, "wb") as f:
+            with open(in_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
-            doc = fitz.open(input_path)
+            doc = fitz.open(in_path)
             
-            # --- LOGIC ENGINE ---
+            # --- AI LOGIC STEP ---
             if "Smart" in mode:
-                full_text = "\n".join([page.get_text() for page in doc])
+                # Read all text for Data 1 (Calculus/Trigonometry/Marksheet) context
+                context = "\n".join([p.get_text() for p in doc])
                 prompt = f"""
-                You are a mathematical auditor. Document content: {full_text}
-                The user is changing '{target_text}' to '{new_instruction}'.
-                Identify all dependent numbers (Totals, Percentages, Calculations).
-                Return ONLY the pairs in this format: Old -> New | Old -> New.
-                No conversational text.
+                Context: {context}
+                User is changing '{target_text}' to '{new_val}'.
+                Calculate all dependent mathematical changes (Totals, %, Results).
+                Return ONLY pairs in this format: {target_text} -> {new_val} | OldVal -> NewVal
+                No other text.
                 """
             else:
-                prompt = f"Change '{target_text}' to '{new_instruction}'. Return ONLY the result."
+                prompt = f"Change '{target_text}' to '{new_val}'. Return ONLY the result."
 
             try:
                 response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
-                ai_logic = response.text.strip()
+                ai_output = response.text.strip()
 
                 # Parse changes
-                changes = []
-                if "Smart" in mode and "->" in ai_logic:
-                    pairs = ai_logic.split("|")
-                    for p in pairs:
-                        if "->" in p:
-                            o, n = p.split("->")
-                            changes.append((o.strip(), n.strip()))
+                work_list = []
+                if "Smart" in mode and "->" in ai_output:
+                    for pair in ai_output.split("|"):
+                        if "->" in pair:
+                            o, n = pair.split("->")
+                            work_list.append((o.strip(), n.strip()))
                 else:
-                    changes.append((target_text, ai_logic))
+                    work_list.append((target_text, ai_output))
 
-                # --- APPLY SURGICAL EDITS ---
-                changes_applied = 0
-                for old_val, new_val in changes:
+                # --- PDF MODIFICATION ---
+                total_changes = 0
+                for old_s, new_s in work_list:
                     for page in doc:
-                        instances = page.search_for(old_val)
+                        instances = page.search_for(old_s)
                         for inst in instances:
-                            # 1. Whitening strictly in margin
+                            # 1. Precise Whitening
                             page.add_redact_annot(inst, fill=(1, 1, 1))
                             page.apply_redactions()
                             
-                            # 2. Baseline Alignment (-2) to prevent '6' falling below
-                            # inst.tl is Top-Left, inst.y1 is Bottom-Edge
-                            point = fitz.Point(inst.x0, inst.y1 - 2)
-                            
+                            # 2. Symmetry Insertion (The '66 to 76' Alignment Fix)
+                            # inst.y1 is the bottom of the box. -2 aligns the baseline.
                             page.insert_text(
-                                point, 
-                                new_val, 
+                                fitz.Point(inst.x0, inst.y1 - 2), 
+                                new_s, 
                                 fontsize=10, 
                                 fontname="helv", 
                                 color=(0, 0, 0)
                             )
-                            changes_applied += 1
+                            total_changes += 1
 
-                if changes_applied > 0:
-                    doc.save(output_path)
-                    with open(output_path, "rb") as f:
-                        st.success(f"Successfully applied {changes_applied} logical updates!")
-                        st.download_button("Download Edited PDF", f, file_name="edited_logic.pdf")
+                if total_changes > 0:
+                    doc.save(out_path)
+                    with open(out_path, "rb") as f:
+                        st.success(f"Success! {len(work_list)} logical values updated.")
+                        st.download_button("Download Edited PDF", f, file_name="smart_edit.pdf")
                 else:
-                    st.error(f"Could not find '{target_text}' in the PDF.")
+                    st.error(f"Could not find '{target_text}' in the file.")
 
             except Exception as e:
-                st.error(f"AI Error: {e}")
+                st.error(f"Logic Error: {e}")
             
-            # Cleanup temp files
+            # Cleanup
             doc.close()
-            if os.path.exists(input_path): os.remove(input_path)
-            if os.path.exists(output_path): os.remove(output_path)
+            if os.path.exists(in_path): os.remove(in_path)
+            if os.path.exists(out_path): os.remove(out_path)
     else:
-        st.warning("Please upload a file and specify text to change.")
+        st.warning("Please upload a PDF and enter target text.")

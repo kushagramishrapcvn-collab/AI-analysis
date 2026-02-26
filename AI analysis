@@ -1,0 +1,115 @@
+import streamlit as st
+from google import genai
+import fitz  # PyMuPDF
+import os
+
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="Logic-Aware Symmetry Editor", layout="wide")
+st.title("🤖 Intelligent & Layout-Preserving PDF Editor")
+
+try:
+    # Ensure your Streamlit Secrets has "GEMINI_API_KEY"
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+    client = genai.Client(api_key=API_KEY)
+except Exception:
+    st.error("Missing API Key in Streamlit Secrets!")
+    st.stop()
+
+# --- 2. THE UI ---
+uploaded_file = st.file_uploader("Upload Math PDF / Marksheet", type="pdf")
+
+# Interface Options
+mode = st.radio(
+    "Select Editing Mode:",
+    ["Edit & Keep Format (Single Change)", "Analyse & Change Everything Related (Smart Logic)"],
+    help="Smart Logic recalculates Totals, Percentages, and Calculus dependencies."
+)
+
+target_text = st.text_input("Original text to change (e.g., 66)", help="Exact text from PDF")
+new_instruction = st.text_input("New value or instruction (e.g., 76)", help="What should it become?")
+
+if st.button("Execute Intelligent Edit"):
+    if uploaded_file and target_text:
+        with st.spinner("Analyzing document structure and math logic..."):
+            # Save uploaded file to local disk for PyMuPDF to process
+            with open("input.pdf", "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            doc = fitz.open("input.pdf")
+            
+            # Extract text from all pages to give the AI context for math logic
+            full_context_text = ""
+            for page in doc:
+                full_context_text += page.get_text()
+
+            # --- AI LOGIC ENGINE ---
+            if "Smart" in mode:
+                prompt = f"""
+                You are a mathematical logic engine. 
+                Document Context: {full_context_text}
+                
+                The user wants to change '{target_text}' to '{new_instruction}'.
+                1. Identify this change.
+                2. Search the context for any DEPENDENT values (Totals, Percentages, Sums, or Calculus results).
+                3. Recalculate those values correctly.
+                
+                RETURN ONLY a list in this EXACT format, separated by pipes:
+                {target_text} -> {new_instruction} | OldValue2 -> NewValue2 | OldValue3 -> NewValue3
+                If no dependencies exist, only return the first pair. Do not include any conversational text.
+                """
+            else:
+                prompt = f"Change '{target_text}' to '{new_instruction}'. Return ONLY the new value."
+
+            response = client.models.generate_content(
+                model='gemini-2.0-flash', # Using Flash for speed and reliability
+                contents=prompt
+            )
+            ai_output = response.text.strip()
+
+            # --- PARSING THE LOGIC ---
+            change_list = []
+            if "Smart" in mode:
+                # Splitting the AI's logic into pairs
+                pairs = ai_output.split("|")
+                for p in pairs:
+                    if "->" in p:
+                        old_part, new_part = p.split("->")
+                        change_list.append((old_part.strip(), new_part.strip()))
+            else:
+                change_list.append((target_text, ai_output))
+
+            # --- APPLYING SURGICAL EDITS ---
+            changes_made = 0
+            for old_str, new_str in change_list:
+                for page in doc:
+                    # Search for the exact coordinates
+                    instances = page.search_for(old_str)
+                    if instances:
+                        for inst in instances:
+                            # 1. Whiten the area strictly
+                            page.add_redact_annot(inst, fill=(1, 1, 1))
+                            page.apply_redactions()
+
+                            # 2. Insert new text with the Baseline-Correction (-2)
+                            # This ensures the replacement sits perfectly in the margin
+                            page.insert_text(
+                                fitz.Point(inst.x0, inst.y1 - 2), 
+                                new_str, 
+                                fontsize=10, 
+                                fontname="helv", 
+                                color=(0, 0, 0)
+                            )
+                            changes_made += 1
+
+            if changes_made > 0:
+                output_path = "output_final.pdf"
+                doc.save(output_path)
+                with open(output_path, "rb") as f:
+                    st.success(f"Success! Processed {len(change_list)} logical updates.")
+                    st.download_button("Download Perfect Logic PDF", f, file_name="edited_document.pdf")
+            else:
+                st.error(f"Could not find '{target_text}' in the document. Please check the spelling.")
+            
+            doc.close()
+    else:
+        st.warning("Please upload a file and specify the target text.")
